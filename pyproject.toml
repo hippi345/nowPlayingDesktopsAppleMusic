@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "now-playing-apple-music"
+version = "0.1.0"
+description = "Glass-style album-art tile on your desktop wallpaper for Apple Music (MusicKit)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Joel Shearon" }]
+keywords = ["apple-music", "musickit", "desktop", "wallpaper", "album-art", "now-playing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Desktop Environment",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "pillow>=11.0.0,<12",
+    "python-dotenv>=1.0.0,<2",
+    "requests>=2.32.0,<3",
+    "PyJWT[crypto]>=2.10.0,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/hippi345/nowPlayingDesktopsAppleMusic"
+Repository = "https://github.com/hippi345/nowPlayingDesktopsAppleMusic"
+Issues = "https://github.com/hippi345/nowPlayingDesktopsAppleMusic/issues"
+Documentation = "https://github.com/hippi345/nowPlayingDesktopsAppleMusic#readme"
+
+[project.optional-dependencies]
+macos = ["pyobjc-framework-Cocoa>=11.0,<12; sys_platform == 'darwin'"]
+windows = [
+    "winrt-runtime~=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Foundation~=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections~=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Media.Control~=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams~=3.2.1; sys_platform == 'win32'",
+]
+linux = ["dbus-next>=0.2.3,<1"]
+dev = [
+    "pytest>=9.1.0,<10",
+    "pytest-cov>=7.1.0,<8",
+    "ruff>=0.9.0,<1",
+    "build>=1.2.0,<2",
+    "cryptography>=44.0.0,<45",
+]
+
+[project.scripts]
+now-playing-apple-music = "now_playing_apple_music.cli:main"
+musickit-sign-token = "now_playing_apple_music.musickit.sign_developer_token:main"
+
+[tool.hatch.build]
+sources = ["src"]
+
+[tool.hatch.build.targets.wheel]
+only-packages = true
+
+[tool.hatch.build.targets.editable]
+dev-mode-dirs = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/now_playing_apple_music/platforms/*" = ["E501"]
+
+[tool.coverage.run]
+source = ["now_playing_apple_music"]
+branch = false
+parallel = true

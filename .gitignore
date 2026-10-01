@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local MusicKit secrets (never commit)
+*.p8
+AuthKey_*.p8
+.env
+.env.*
+!.env.example
+config/musickit-signing.local.json
+**/musickit-signing.local.json
+.musickit-token
+musickit-token.txt
+
+# App runtime
+now-playing-apple-music.log
