@@ -1,0 +1,304 @@
+"""Windows desktop wallpaper via SystemParametersInfo and optional per-monitor COM."""
+
+from __future__ import annotations
+
+import ctypes
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+
+from now_playing_apple_music.platforms.base import ScreenInfo
+
+if sys.platform == "win32":
+    import winreg
+
+    from now_playing_apple_music.platforms.windows_restore import WALLPAPER_STYLE_SPAN
+else:  # pragma: no cover
+    winreg = None  # type: ignore[assignment]
+    WALLPAPER_STYLE_SPAN = "22"
+
+logger = logging.getLogger(__name__)
+
+SPI_GETDESKWALLPAPER = 0x0073
+SPI_SETDESKWALLPAPER = 20
+SPIF_UPDATEINIFILE = 0x01
+SPIF_SENDWININICHANGE = 0x02
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
+_MAX_WALLPAPER_CHARS = 260
+
+
+class WindowsWallpaperPlatform:
+    """Windows implementation of :class:`~now_playing_apple_music.platforms.base.WallpaperPlatform`."""
+
+    def __init__(self) -> None:
+        if sys.platform == "win32":
+            from now_playing_apple_music.platforms.windows_monitors import set_process_dpi_aware
+
+            set_process_dpi_aware()
+        from now_playing_apple_music.platforms.windows_com import idesktop_wallpaper_available
+
+        self._per_monitor = sys.platform == "win32" and idesktop_wallpaper_available()
+
+    def set_wallpaper(
+        self,
+        image_path: Path,
+        *,
+        screen_id: str | None = None,
+        virtual_desktop_span: bool = False,
+    ) -> None:
+        from PIL import Image
+
+        from now_playing_apple_music.platforms.windows_restore import (
+            apply_windows_span_wallpaper_style,
+            apply_windows_wallpaper_style_for_image,
+        )
+
+        path_str = str(image_path.resolve())
+        monitor_w, monitor_h = self._monitor_pixel_size_for_screen(screen_id)
+        with Image.open(image_path) as image:
+            image_w, image_h = image.size
+        if virtual_desktop_span:
+            apply_windows_span_wallpaper_style()
+            style_written = WALLPAPER_STYLE_SPAN
+        else:
+            style_written = apply_windows_wallpaper_style_for_image(
+                image_width=image_w,
+                image_height=image_h,
+                monitor_width=monitor_w,
+                monitor_height=monitor_h,
+            )
+        self._log_wallpaper_apply(
+            screen_id=screen_id,
+            image_width=image_w,
+            image_height=image_h,
+            wallpaper_style=style_written,
+            virtual_desktop_span=virtual_desktop_span,
+        )
+        if screen_id is not None and self._per_monitor:
+            _set_wallpaper_on_monitor(path_str, screen_id)
+            return
+        if not ctypes.windll.user32.SystemParametersInfoW(
+            SPI_SETDESKWALLPAPER,
+            0,
+            path_str,
+            SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE,
+        ):
+            err = int(ctypes.windll.kernel32.GetLastError())
+            raise OSError(f"SystemParametersInfoW failed for {path_str} (GetLastError={err})")
+
+    def get_current_wallpaper(self, *, screen_id: str | None = None) -> Path | None:
+        if screen_id is not None and self._per_monitor:
+            path = _get_wallpaper_for_monitor(screen_id)
+            if path:
+                return Path(path)
+        buffer = ctypes.create_unicode_buffer(_MAX_WALLPAPER_CHARS)
+        if not ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETDESKWALLPAPER,
+            len(buffer),
+            buffer,
+            0,
+        ):
+            return _wallpaper_from_registry()
+        path = buffer.value.strip()
+        if not path:
+            return _wallpaper_from_registry()
+        return Path(path)
+
+    def get_primary_screen_size(self) -> tuple[int, int]:
+        if sys.platform != "win32":
+            return 1920, 1080
+        return self._monitor_pixel_size_for_screen(None)
+
+    def _monitor_pixel_size_for_screen(self, screen_id: str | None) -> tuple[int, int]:
+        from now_playing_apple_music.platforms.windows_monitors import (
+            compose_canvas_pixel_size,
+            enumerate_monitors,
+            largest_monitor_pixel_size,
+        )
+
+        monitors = enumerate_monitors()
+        if screen_id is not None:
+            for monitor in monitors:
+                if monitor.monitor_id == screen_id:
+                    return monitor.width, monitor.height
+        for monitor in monitors:
+            if monitor.is_primary:
+                return monitor.width, monitor.height
+        if monitors:
+            return compose_canvas_pixel_size(monitors)
+        return largest_monitor_pixel_size(monitors)
+
+    def _log_wallpaper_apply(
+        self,
+        *,
+        screen_id: str | None,
+        image_width: int,
+        image_height: int,
+        wallpaper_style: str,
+        virtual_desktop_span: bool,
+    ) -> None:
+        if sys.platform != "win32":
+            return
+        from now_playing_apple_music.platforms.windows_dpi import (
+            describe_thread_dpi_awareness_context,
+        )
+        from now_playing_apple_music.platforms.windows_monitors import (
+            MonitorInfo,
+            enumerate_monitors,
+            log_wallpaper_apply_for_monitor,
+        )
+
+        monitors = enumerate_monitors()
+        if virtual_desktop_span:
+            from now_playing_apple_music.platforms.windows_monitors import compose_canvas_pixel_size
+
+            canvas_w, canvas_h = compose_canvas_pixel_size(monitors)
+            logger.info(
+                "Wallpaper apply virtual span canvas=%dx%d style=%s awareness=%s",
+                canvas_w,
+                canvas_h,
+                wallpaper_style,
+                describe_thread_dpi_awareness_context(),
+            )
+            for monitor in monitors:
+                log_wallpaper_apply_for_monitor(
+                    monitor=monitor,
+                    composed_width=canvas_w,
+                    composed_height=canvas_h,
+                    wallpaper_style=wallpaper_style,
+                )
+            return
+        target_id = screen_id
+        if target_id is None:
+            primary = next((m for m in monitors if m.is_primary), monitors[0] if monitors else None)
+            if primary is None:
+                return
+            target_id = primary.monitor_id
+        for monitor in monitors:
+            if monitor.monitor_id == target_id:
+                log_wallpaper_apply_for_monitor(
+                    monitor=monitor,
+                    composed_width=image_width,
+                    composed_height=image_height,
+                    wallpaper_style=wallpaper_style,
+                )
+                return
+        log_wallpaper_apply_for_monitor(
+            monitor=MonitorInfo(
+                monitor_id=target_id or "0",
+                width=image_width,
+                height=image_height,
+                is_primary=True,
+            ),
+            composed_width=image_width,
+            composed_height=image_height,
+            wallpaper_style=wallpaper_style,
+        )
+
+    def list_screens(self) -> list[ScreenInfo]:
+        if sys.platform != "win32":
+            return [ScreenInfo(screen_id="0", width=1920, height=1080, is_primary=True)]
+        from now_playing_apple_music.platforms.windows_monitors import enumerate_monitors
+
+        return [
+            ScreenInfo(
+                screen_id=m.monitor_id,
+                width=m.width,
+                height=m.height,
+                is_primary=m.is_primary,
+                left=m.left,
+                top=m.top,
+                device_name=m.device_name,
+            )
+            for m in enumerate_monitors()
+        ]
+
+    def supports_per_screen_wallpaper(self) -> bool:
+        return self._per_monitor
+
+    def capture_restore_snapshot(
+        self,
+        *,
+        state_dir: Path | None = None,
+        generated_dir: Path | None = None,
+        existing_snapshot: dict[str, Any] | None = None,
+        session_active: bool = False,
+        recovering: bool = False,
+    ) -> dict[str, Any]:
+        from now_playing_apple_music.config import user_config_dir
+        from now_playing_apple_music.platforms.windows_restore import (
+            capture_windows_restore_snapshot,
+        )
+
+        monitors: dict[str, str] = {}
+        if self._per_monitor:
+            for screen in self.list_screens():
+                current = self.get_current_wallpaper(screen_id=screen.screen_id)
+                if current:
+                    monitors[screen.screen_id] = str(current)
+        primary = self.get_current_wallpaper()
+        dest_dir = state_dir or user_config_dir()
+        return capture_windows_restore_snapshot(
+            state_dir=dest_dir,
+            generated_dir=generated_dir,
+            reported_path=str(primary) if primary else None,
+            per_monitor=self._per_monitor,
+            monitor_paths=monitors,
+            existing_snapshot=existing_snapshot,
+            session_active=session_active,
+            recovering=recovering,
+        )
+
+    def apply_restore_snapshot(self, snapshot: dict[str, Any]) -> None:
+        from now_playing_apple_music.platforms.windows_restore import apply_windows_restore_snapshot
+
+        apply_windows_restore_snapshot(
+            snapshot,
+            set_wallpaper_on_monitor=_set_wallpaper_on_monitor,
+            set_wallpaper_primary=lambda path: self.set_wallpaper(path),
+        )
+
+    def restore_original_wallpaper(self, snapshot: dict[str, Any]) -> None:
+        """Alias used in tests; delegates to :meth:`apply_restore_snapshot`."""
+        self.apply_restore_snapshot(snapshot)
+
+
+def _wallpaper_from_registry() -> Path | None:
+    if winreg is None:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Control Panel\Desktop",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "Wallpaper")
+    except OSError:
+        return None
+    if not value:
+        return None
+    return Path(str(value))
+
+
+def _set_wallpaper_on_monitor(path_str: str, monitor_id: str) -> None:
+    from now_playing_apple_music.platforms.windows_com import set_wallpaper_for_monitor
+
+    set_wallpaper_for_monitor(monitor_id, path_str)
+
+
+def _get_wallpaper_for_monitor(monitor_id: str) -> str | None:
+    from now_playing_apple_music.platforms.windows_com import get_wallpaper_for_monitor
+
+    return get_wallpaper_for_monitor(monitor_id)
+
+
+def set_desktop_wallpaper(image_path: Path) -> None:
+    """Set the Windows desktop background to ``image_path`` (legacy helper)."""
+    WindowsWallpaperPlatform().set_wallpaper(image_path)
+
+
+if sys.platform == "win32":
+    platform = WindowsWallpaperPlatform()
+else:
+    platform = None  # type: ignore[assignment]

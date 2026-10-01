@@ -1,0 +1,6 @@
+{
+  "team_id": "YOUR_TEAM_ID",
+  "key_id": "YOUR_KEY_ID",
+  "private_key_path": "/absolute/path/to/AuthKey_YOUR_KEY_ID.p8",
+  "token_ttl_seconds": 15552000
+}
